@@ -2,25 +2,22 @@
 <html lang="sv">
 <head>
     <meta charset="UTF-8">
-    <title>Pitch Matcher - Pitchy Version</title>
+    <title>Pitch Matcher - Modern Version</title>
     <style>
-        body { background: #121212; color: white; font-family: sans-serif; text-align: center; padding: 20px; margin: 0; }
-        .card { background: #1e1e1e; padding: 30px; border-radius: 16px; max-width: 800px; margin: 20px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-        canvas { background: #000; width: 100%; height: 350px; border-radius: 8px; margin-top: 20px; border: 1px solid #333; }
-        .btn-group { margin: 20px 0; }
-        button { background: #3d5afe; color: white; border: none; padding: 15px 30px; margin: 10px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 1rem; }
-        button:disabled { background: #444; cursor: not-allowed; }
-        #btnMic { background: #00c853; }
-        #status { color: #888; margin: 15px; font-family: monospace; min-height: 1.2em; }
-        .hz-display { font-size: 1.4rem; margin: 15px; font-family: 'Courier New', Courier, monospace; }
-        .match-glow { color: #00c853; text-shadow: 0 0 10px #00c853; font-weight: bold; }
+        body { background: #121212; color: white; font-family: sans-serif; text-align: center; padding: 20px; }
+        .card { background: #1e1e1e; padding: 30px; border-radius: 16px; max-width: 800px; margin: auto; }
+        canvas { background: #000; width: 100%; height: 300px; border-radius: 8px; margin-top: 20px; border: 1px solid #333; }
+        button { background: #3d5afe; color: white; border: none; padding: 15px 30px; margin: 10px; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        button:disabled { background: #444; }
+        .hz-display { font-size: 1.5rem; margin: 20px; font-family: monospace; }
+        #status { color: #888; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 
 <div class="card">
     <h1>Vocal Pitch Matcher</h1>
-    <div id="status">Laddar...</div>
+    <div id="status">Klicka på knapparna för att starta</div>
     
     <div class="btn-group">
         <button id="btnTab">1. Koppla Flik (med ljud)</button>
@@ -32,146 +29,127 @@
         Du: <span id="micHz" style="color: #00c853;">0</span> Hz
     </div>
     
-    <div id="matchText" style="height: 20px;"></div>
-    
     <canvas id="visualizer"></canvas>
 </div>
 
 <script type="module">
+    // Vi använder Pitchy via en pålitlig ESM-källa
     import { PitchDetector } from "https://esm.sh/pitchy@4.0.1";
 
     let audioCtx;
-    let tabFreq = 0, micFreq = 0;
-    let isDrawing = false;
+    let tabData = { freq: 0, analyser: null, buffer: null, detector: null };
+    let micData = { freq: 0, analyser: null, buffer: null, detector: null };
 
-    const statusEl = document.getElementById('status');
     const btnTab = document.getElementById('btnTab');
     const btnMic = document.getElementById('btnMic');
-    const matchText = document.getElementById('matchText');
+    const statusEl = document.getElementById('status');
 
-    statusEl.innerText = "Klar att starta. Börja med att koppla flik!";
-
-    async function getContext() {
+    async function initAudio() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
         if (audioCtx.state === 'suspended') await audioCtx.resume();
-        return audioCtx;
+    }
+
+    function createDetectionNode(stream) {
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+        
+        return {
+            analyser: analyser,
+            buffer: new Float32Array(analyser.fftSize),
+            detector: PitchDetector.forFloat32Array(analyser.fftSize)
+        };
     }
 
     btnTab.onclick = async () => {
         try {
-            const ctx = await getContext();
+            await initAudio();
             const stream = await navigator.mediaDevices.getDisplayMedia({ 
                 video: true, 
-                audio: {
-                    echoCancellation: false,
-                    noiseSuppression: false,
-                    autoGainControl: false
-                } 
+                audio: true 
             });
 
             if (stream.getAudioTracks().length === 0) {
-                alert("VIKTIGT: Du måste bocka i 'Dela även ljud' i popup-fönstret!");
+                alert("DU MÅSTE BOCKA I 'DELA LJUD'!");
                 return;
             }
 
-            setupPitchLoop(stream, 'tab');
+            tabData = { ...tabData, ...createDetectionNode(stream) };
             btnMic.disabled = false;
-            statusEl.innerText = "Flik kopplad. Starta nu mikrofonen!";
+            statusEl.innerText = "Flik kopplad! Starta micken.";
+            updateLoop(); // Starta analysen
         } catch (e) {
-            statusEl.innerText = "Fel vid flikkoppling: " + e.message;
+            statusEl.innerText = "Fel: " + e.message;
         }
     };
 
     btnMic.onclick = async () => {
         try {
-            await getContext();
+            await initAudio();
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            setupPitchLoop(stream, 'mic');
-            statusEl.innerText = "Sjung nu! Försök pricka den blå linjen.";
-            if (!isDrawing) {
-                isDrawing = true;
-                draw();
-            }
+            micData = { ...micData, ...createDetectionNode(stream) };
+            statusEl.innerText = "Sjung nu!";
+            draw(); // Starta ritandet
         } catch (e) {
-            statusEl.innerText = "Kunde inte starta mikrofon.";
+            statusEl.innerText = "Kunde inte starta mick.";
         }
     };
 
-    function setupPitchLoop(stream, type) {
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 2048;
-        source.connect(analyser);
-
-        const detector = PitchDetector.forFloat32Array(analyser.fftSize);
-        const inputBuffer = new Float32Array(analyser.fftSize);
-
-        const updatePitch = () => {
-            analyser.getFloatTimeDomainData(inputBuffer);
-            // Clarity-tröskel på 0.8 för att undvika brus
-            const [pitch, clarity] = detector.findPitch(inputBuffer, audioCtx.sampleRate);
-
+    function updateLoop() {
+        // Analysera fliken
+        if (tabData.analyser) {
+            tabData.analyser.getFloatTimeDomainData(tabData.buffer);
+            const [pitch, clarity] = tabData.detector.findPitch(tabData.buffer, audioCtx.sampleRate);
             if (clarity > 0.8) {
-                if (type === 'tab') {
-                    tabFreq = pitch;
-                    document.getElementById('tabHz').innerText = Math.round(pitch);
-                } else {
-                    micFreq = pitch;
-                    document.getElementById('micHz').innerText = Math.round(pitch);
-                }
+                tabData.freq = pitch;
+                document.getElementById('tabHz').innerText = Math.round(pitch);
             }
-            requestAnimationFrame(updatePitch);
-        };
-        updatePitch();
+        }
+
+        // Analysera micken
+        if (micData.analyser) {
+            micData.analyser.getFloatTimeDomainData(micData.buffer);
+            const [pitch, clarity] = micData.detector.findPitch(micData.buffer, audioCtx.sampleRate);
+            if (clarity > 0.8) {
+                micData.freq = pitch;
+                document.getElementById('micHz').innerText = Math.round(pitch);
+            }
+        }
+
+        requestAnimationFrame(updateLoop);
     }
 
     function draw() {
         const canvas = document.getElementById('visualizer');
-        const canvasCtx = canvas.getContext('2d');
-        requestAnimationFrame(draw);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        canvasCtx.fillStyle = "#000";
-        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-        // Skala för Y-axel (Logaritmisk)
         const getY = (f) => {
-            if (f < 50 || f > 1200) return -100;
-            const minLog = Math.log2(50);
-            const maxLog = Math.log2(1200);
-            return canvas.height - ((Math.log2(f) - minLog) / (maxLog - minLog)) * canvas.height;
+            if (f < 50 || f > 1000) return -100;
+            return canvas.height - (Math.log2(f/50) / Math.log2(1000/50)) * canvas.height;
         };
 
-        const ty = getY(tabFreq);
-        const my = getY(micFreq);
-
-        // Rita flikens ton (Blå linje)
+        // Rita flik (Blå linje)
+        const ty = getY(tabData.freq);
         if (ty > 0) {
-            canvasCtx.strokeStyle = "#4db8ff";
-            canvasCtx.lineWidth = 5;
-            canvasCtx.beginPath();
-            canvasCtx.moveTo(0, ty);
-            canvasCtx.lineTo(canvas.width, ty);
-            canvasCtx.stroke();
+            ctx.strokeStyle = "#4db8ff";
+            ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.moveTo(0, ty); ctx.lineTo(canvas.width, ty); ctx.stroke();
         }
 
-        // Rita din ton (Grön boll)
+        // Rita röst (Grön boll)
+        const my = getY(micData.freq);
         if (my > 0) {
-            canvasCtx.fillStyle = "#00c853";
-            canvasCtx.beginPath();
-            canvasCtx.arc(canvas.width / 2, my, 15, 0, Math.PI * 2);
-            canvasCtx.fill();
-
-            // Match-logik
-            if (tabFreq > 0 && Math.abs(tabFreq - micFreq) < 5) {
-                matchText.innerHTML = "<span class='match-glow'>PERFEKT MATCH!</span>";
-            } else {
-                matchText.innerText = "";
-            }
+            ctx.fillStyle = "#00c853";
+            ctx.beginPath(); ctx.arc(canvas.width/2, my, 15, 0, Math.PI*2); ctx.fill();
         }
+
+        requestAnimationFrame(draw);
     }
 </script>
-
 </body>
 </html>
