@@ -93,7 +93,6 @@
     const statusEl = document.getElementById('status');
     const matchText = document.getElementById('matchText');
 
-    // Hjälpfunktion för att starta AudioContext (måste ske via klick)
     async function ensureAudioContext() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -103,18 +102,16 @@
         }
     }
 
-    // Hantera Flik-delning
     document.getElementById('btnTab').onclick = async () => {
         try {
             await ensureAudioContext();
-            // VIKTIGT: Användaren MÅSTE kryssa i "Dela ljud" i popup-rutan!
             const stream = await navigator.mediaDevices.getDisplayMedia({ 
                 video: true, 
                 audio: true 
             });
             
             if (stream.getAudioTracks().length === 0) {
-                alert("Du glömde att kryssa i 'Dela ljud'!");
+                alert("Du glömde att kryssa i 'Dela ljud' i popup-rutan!");
                 return;
             }
 
@@ -122,12 +119,10 @@
             statusEl.innerText = "Flik kopplad! Starta nu mikrofonen.";
             document.getElementById('btnMic').disabled = false;
         } catch (err) {
-            console.error(err);
-            statusEl.innerText = "Fel vid flikdelning: " + err.message;
+            statusEl.innerText = "Fel: " + err.message;
         }
     };
 
-    // Hantera Mikrofon
     document.getElementById('btnMic').onclick = async () => {
         try {
             await ensureAudioContext();
@@ -139,15 +134,24 @@
                 draw();
             }
         } catch (err) {
-            statusEl.innerText = "Kunde inte nå mikrofonen.";
+            statusEl.innerText = "Ingen mikrofon hittades.";
         }
     };
 
     async function setupPitch(stream, type) {
         const source = audioCtx.createMediaStreamSource(stream);
         
-        // Vänta på att aubio laddats
-        const AubioModule = await window.aubio();
+        // FIX: Här anropar vi Aubio på ett säkrare sätt
+        // Vissa versioner kräver 'aubio()', andra finns direkt i 'window.aubio'
+        const aubioInit = window.aubio || (window.Module && window.Module.aubio);
+        
+        if (typeof aubioInit !== 'function') {
+            console.error("Aubio biblioteket hittades inte eller är inte en funktion.");
+            statusEl.innerText = "Tekniskt fel: Biblioteket laddades inte korrekt.";
+            return;
+        }
+
+        const AubioModule = await aubioInit();
         const pitchDetector = new AubioModule.Pitch(
             'default', 
             2048, 
@@ -175,22 +179,11 @@
 
     function draw() {
         requestAnimationFrame(draw);
-        
-        // Rensa skärmen
         ctx.fillStyle = "#121212";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        // Rita stödlinjer för frekvens
-        ctx.strokeStyle = "#333";
-        ctx.lineWidth = 1;
-        for(let i=0; i<10; i++) {
-            let y = (canvas.height / 10) * i;
-            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-        }
-
-        // Skala om frekvens till Y-position (fokus på 80Hz - 800Hz)
         const getPlayerY = (f) => {
-            if (f <= 0) return -100;
+            if (f <= 50) return -100; // Ignorera brus under 50Hz
             const logF = Math.log2(f);
             const minF = Math.log2(80);
             const maxF = Math.log2(800);
@@ -200,33 +193,24 @@
         const tabY = getPlayerY(tabFreq);
         const micY = getPlayerY(micFreq);
 
-        // Rita målet (Fliken) - Blått ljus
-        if (tabY > 0) {
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = "#3d5afe";
+        if (tabY > 0 && tabY < canvas.height) {
             ctx.strokeStyle = "#3d5afe";
-            ctx.lineWidth = 6;
+            ctx.lineWidth = 4;
             ctx.beginPath();
             ctx.moveTo(0, tabY);
             ctx.lineTo(canvas.width, tabY);
             ctx.stroke();
-            ctx.shadowBlur = 0;
         }
 
-        // Rita spelaren (Du) - Grön boll
-        if (micY > 0) {
+        if (micY > 0 && micY < canvas.height) {
             ctx.fillStyle = "#00c853";
             ctx.beginPath();
-            ctx.arc(canvas.width / 2, micY, 20, 0, Math.PI * 2);
+            ctx.arc(canvas.width / 2, micY, 15, 0, Math.PI * 2);
             ctx.fill();
 
-            // Kolla match (inom ett litet spann)
             const diff = Math.abs(tabFreq - micFreq);
-            if (tabFreq > 0 && diff < 10) {
+            if (tabFreq > 50 && diff < 10) {
                 matchText.innerText = "PERFEKT MATCH!";
-                ctx.strokeStyle = "white";
-                ctx.lineWidth = 4;
-                ctx.stroke();
             } else {
                 matchText.innerText = "";
             }
