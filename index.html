@@ -2,144 +2,173 @@
 <html lang="sv">
 <head>
     <meta charset="UTF-8">
-    <title>Pitch Matcher - Fixed</title>
+    <title>Pitch Matcher - Pitchy Version</title>
     <style>
-        body { background: #121212; color: white; font-family: sans-serif; text-align: center; padding: 20px; }
-        .card { background: #1e1e1e; padding: 20px; border-radius: 12px; max-width: 800px; margin: auto; }
-        canvas { background: #000; width: 100%; height: 300px; border-radius: 8px; margin-top: 20px; }
-        button { background: #3d5afe; color: white; border: none; padding: 15px 30px; margin: 10px; border-radius: 8px; cursor: pointer; font-weight: bold; }
-        button:disabled { background: #444; }
-        #status { color: #aaa; margin: 10px; font-family: monospace; }
-        .hz-display { font-size: 1.2rem; margin: 10px; color: #4db8ff; }
+        body { background: #121212; color: white; font-family: sans-serif; text-align: center; padding: 20px; margin: 0; }
+        .card { background: #1e1e1e; padding: 30px; border-radius: 16px; max-width: 800px; margin: 20px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        canvas { background: #000; width: 100%; height: 350px; border-radius: 8px; margin-top: 20px; border: 1px solid #333; }
+        .btn-group { margin: 20px 0; }
+        button { background: #3d5afe; color: white; border: none; padding: 15px 30px; margin: 10px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 1rem; }
+        button:disabled { background: #444; cursor: not-allowed; }
+        #btnMic { background: #00c853; }
+        #status { color: #888; margin: 15px; font-family: monospace; min-height: 1.2em; }
+        .hz-display { font-size: 1.4rem; margin: 15px; font-family: 'Courier New', Courier, monospace; }
+        .match-glow { color: #00c853; text-shadow: 0 0 10px #00c853; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div class="card">
     <h1>Vocal Pitch Matcher</h1>
-    <div id="status">Laddar bibliotek...</div>
+    <div id="status">Laddar...</div>
     
     <div class="btn-group">
-        <button id="btnTab" disabled>1. Koppla Flik</button>
+        <button id="btnTab">1. Koppla Flik (med ljud)</button>
         <button id="btnMic" disabled>2. Starta Mikrofon</button>
     </div>
 
     <div class="hz-display">
-        Flik: <span id="tabHz">0</span> Hz | Du: <span id="micHz">0</span> Hz
+        Flik: <span id="tabHz" style="color: #4db8ff;">0</span> Hz | 
+        Du: <span id="micHz" style="color: #00c853;">0</span> Hz
     </div>
+    
+    <div id="matchText" style="height: 20px;"></div>
     
     <canvas id="visualizer"></canvas>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/aubiojs@0.1.1/build/aubio.min.js"></script>
+<script type="module">
+    import { PitchDetector } from "https://esm.sh/pitchy@4.0.1";
 
-<script>
     let audioCtx;
     let tabFreq = 0, micFreq = 0;
-    let AubioInstance;
+    let isDrawing = false;
 
     const statusEl = document.getElementById('status');
     const btnTab = document.getElementById('btnTab');
     const btnMic = document.getElementById('btnMic');
+    const matchText = document.getElementById('matchText');
 
-    // 1. KONTROLLERA ATT BIBLIOTEKET LADDATS
-    window.onload = async () => {
-        try {
-            // AubioJS skapar ofta en global funktion som heter 'aubio'
-            if (typeof window.aubio !== 'function') {
-                throw new Error("AubioJS hittades inte. Kontrollera internetanslutning.");
-            }
-            
-            statusEl.innerText = "Bibliotek redo. Klicka på 'Koppla Flik'.";
-            btnTab.disabled = false;
-        } catch (e) {
-            statusEl.innerText = "FEL: " + e.message;
-            console.error(e);
-        }
-    };
+    statusEl.innerText = "Klar att starta. Börja med att koppla flik!";
 
-    async function initAudio() {
+    async function getContext() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
         if (audioCtx.state === 'suspended') await audioCtx.resume();
-        
-        if (!AubioInstance) {
-            AubioInstance = await window.aubio();
-        }
+        return audioCtx;
     }
 
     btnTab.onclick = async () => {
-        await initAudio();
         try {
-            const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+            const ctx = await getContext();
+            const stream = await navigator.mediaDevices.getDisplayMedia({ 
+                video: true, 
+                audio: {
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false
+                } 
+            });
+
             if (stream.getAudioTracks().length === 0) {
-                alert("Du måste bocka i 'Dela ljud'!");
+                alert("VIKTIGT: Du måste bocka i 'Dela även ljud' i popup-fönstret!");
                 return;
             }
-            startPitchDetection(stream, 'tab');
+
+            setupPitchLoop(stream, 'tab');
             btnMic.disabled = false;
-            statusEl.innerText = "Flik kopplad. Starta mikrofonen.";
+            statusEl.innerText = "Flik kopplad. Starta nu mikrofonen!";
         } catch (e) {
-            statusEl.innerText = "Kunde inte koppla flik.";
+            statusEl.innerText = "Fel vid flikkoppling: " + e.message;
         }
     };
 
     btnMic.onclick = async () => {
-        await initAudio();
         try {
+            await getContext();
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            startPitchDetection(stream, 'mic');
-            statusEl.innerText = "Sjung!";
-            draw();
+            setupPitchLoop(stream, 'mic');
+            statusEl.innerText = "Sjung nu! Försök pricka den blå linjen.";
+            if (!isDrawing) {
+                isDrawing = true;
+                draw();
+            }
         } catch (e) {
             statusEl.innerText = "Kunde inte starta mikrofon.";
         }
     };
 
-    function startPitchDetection(stream, type) {
+    function setupPitchLoop(stream, type) {
         const source = audioCtx.createMediaStreamSource(stream);
-        const pitchDetector = new AubioInstance.Pitch('default', 2048, 512, audioCtx.sampleRate);
-        
-        const scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
-        source.connect(scriptNode);
-        scriptNode.connect(audioCtx.destination);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
 
-        scriptNode.onaudioprocess = (e) => {
-            const input = e.inputBuffer.getChannelData(0);
-            const freq = pitchDetector.do(input);
-            if (type === 'tab') {
-                tabFreq = freq;
-                document.getElementById('tabHz').innerText = Math.round(freq);
-            } else {
-                micFreq = freq;
-                document.getElementById('micHz').innerText = Math.round(freq);
+        const detector = PitchDetector.forFloat32Array(analyser.fftSize);
+        const inputBuffer = new Float32Array(analyser.fftSize);
+
+        const updatePitch = () => {
+            analyser.getFloatTimeDomainData(inputBuffer);
+            // Clarity-tröskel på 0.8 för att undvika brus
+            const [pitch, clarity] = detector.findPitch(inputBuffer, audioCtx.sampleRate);
+
+            if (clarity > 0.8) {
+                if (type === 'tab') {
+                    tabFreq = pitch;
+                    document.getElementById('tabHz').innerText = Math.round(pitch);
+                } else {
+                    micFreq = pitch;
+                    document.getElementById('micHz').innerText = Math.round(pitch);
+                }
             }
+            requestAnimationFrame(updatePitch);
         };
+        updatePitch();
     }
 
     function draw() {
-        requestAnimationFrame(draw);
         const canvas = document.getElementById('visualizer');
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const canvasCtx = canvas.getContext('2d');
+        requestAnimationFrame(draw);
 
+        canvasCtx.fillStyle = "#000";
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Skala för Y-axel (Logaritmisk)
         const getY = (f) => {
-            if (f < 40) return -100;
-            return canvas.height - (Math.log2(f/40) / Math.log2(1000/40)) * canvas.height;
+            if (f < 50 || f > 1200) return -100;
+            const minLog = Math.log2(50);
+            const maxLog = Math.log2(1200);
+            return canvas.height - ((Math.log2(f) - minLog) / (maxLog - minLog)) * canvas.height;
         };
 
         const ty = getY(tabFreq);
         const my = getY(micFreq);
 
+        // Rita flikens ton (Blå linje)
         if (ty > 0) {
-            ctx.strokeStyle = "#4db8ff";
-            ctx.lineWidth = 3;
-            ctx.beginPath(); ctx.moveTo(0, ty); ctx.lineTo(canvas.width, ty); ctx.stroke();
+            canvasCtx.strokeStyle = "#4db8ff";
+            canvasCtx.lineWidth = 5;
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(0, ty);
+            canvasCtx.lineTo(canvas.width, ty);
+            canvasCtx.stroke();
         }
+
+        // Rita din ton (Grön boll)
         if (my > 0) {
-            ctx.fillStyle = "#ff5532";
-            ctx.beginPath(); ctx.arc(canvas.width/2, my, 12, 0, Math.PI*2); ctx.fill();
+            canvasCtx.fillStyle = "#00c853";
+            canvasCtx.beginPath();
+            canvasCtx.arc(canvas.width / 2, my, 15, 0, Math.PI * 2);
+            canvasCtx.fill();
+
+            // Match-logik
+            if (tabFreq > 0 && Math.abs(tabFreq - micFreq) < 5) {
+                matchText.innerHTML = "<span class='match-glow'>PERFEKT MATCH!</span>";
+            } else {
+                matchText.innerText = "";
+            }
         }
     }
 </script>
