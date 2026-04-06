@@ -2,33 +2,79 @@
 <html lang="sv">
 <head>
     <meta charset="UTF-8">
-    <title>Pitch Matcher - All-in-One</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pitch Matcher Pro</title>
     <style>
-        body { background: #191919; color: #FFFFFF; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        .container { background: #636363; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); width: 80%; max-width: 800px; text-align: center; }
-        canvas { background: #000; width: 100%; height: 300px; border-radius: 8px; margin-top: 20px; border: 2px solid #A0A0A0; }
-        button { background: #FF5532; color: white; border: none; padding: 12px 24px; margin: 10px; border-radius: 5px; cursor: pointer; font-weight: bold; transition: 0.2s; }
-        button:hover { background: #ff775a; }
-        button:disabled { background: #D9D9D9; cursor: not-allowed; }
-        .status { margin: 10px; font-size: 0.9rem; color: #F2F2F2; }
-        #freqDisplay { font-size: 1.5rem; margin-top: 10px; font-family: monospace; }
+        body { 
+            background: #121212; 
+            color: #e0e0e0; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            margin: 0; 
+            padding: 20px;
+        }
+        .card { 
+            background: #1e1e1e; 
+            padding: 2rem; 
+            border-radius: 16px; 
+            box-shadow: 0 8px 32px rgba(0,0,0,0.8); 
+            width: 100%; 
+            max-width: 900px; 
+            text-align: center; 
+        }
+        canvas { 
+            background: #000; 
+            width: 100%; 
+            height: 350px; 
+            border-radius: 8px; 
+            margin-top: 20px; 
+            border: 1px solid #333; 
+        }
+        .btn-group { margin: 20px 0; }
+        button { 
+            background: #3d5afe; 
+            color: white; 
+            border: none; 
+            padding: 14px 28px; 
+            margin: 5px; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-weight: 600; 
+            transition: 0.3s;
+        }
+        button:hover { background: #536dfe; transform: translateY(-2px); }
+        button:disabled { background: #444; cursor: not-allowed; transform: none; }
+        #btnMic { background: #00c853; }
+        #btnMic:hover { background: #69f0ae; }
+        
+        .status-bar { 
+            padding: 10px; 
+            margin: 10px 0; 
+            border-radius: 4px; 
+            background: #2a2a2a;
+            font-family: monospace;
+        }
+        .match-alert { color: #00c853; font-weight: bold; height: 24px; }
     </style>
 </head>
 <body>
 
-<div class="container">
+<div class="card">
     <h1>Pitch Matcher</h1>
-    <p>Matcha din röst med ljudet från en annan flik</p>
+    <p>Fånga ljudet från en flik och se om du kan sjunga i samma tonläge!</p>
     
-    <div class="controls">
-        <button id="btnTab">1. Koppla Flik (Referens)</button>
+    <div class="btn-group">
+        <button id="btnTab">1. Koppla Flik (inkl. Ljud)</button>
         <button id="btnMic" disabled>2. Starta Mikrofon</button>
     </div>
     
-    <div class="status" id="status">Väntar på att du ska välja ljudkälla...</div>
-    <div id="freqDisplay">
-        <span style="color: #4db8ff;">Flik: --- Hz</span> | 
-        <span style="color: #FF5532;">Du: --- Hz</span>
+    <div class="status-bar" id="status">Väntar på val av källa...</div>
+    <div id="matchText" class="match-alert"></div>
+    
+    <div id="debug" style="font-size: 0.8rem; color: #888;">
+        Flik: <span id="tabHz">0</span> Hz | Du: <span id="micHz">0</span> Hz
     </div>
     
     <canvas id="visualizer"></canvas>
@@ -38,109 +84,151 @@
 
 <script>
     let audioCtx;
-    let tabPitchDetector, micPitchDetector;
-    let tabFreq = 0, micFreq = 0;
+    let tabFreq = 0;
+    let micFreq = 0;
+    let isRunning = false;
+
     const canvas = document.getElementById('visualizer');
     const ctx = canvas.getContext('2d');
-    const status = document.getElementById('status');
-    const freqDisplay = document.getElementById('freqDisplay');
+    const statusEl = document.getElementById('status');
+    const matchText = document.getElementById('matchText');
 
-    // Initiera Aubio och AudioContext
-    async function initAudio() {
+    // Hjälpfunktion för att starta AudioContext (måste ske via klick)
+    async function ensureAudioContext() {
         if (!audioCtx) {
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
+        if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+        }
     }
 
-    // Knappen för att fånga fliken
+    // Hantera Flik-delning
     document.getElementById('btnTab').onclick = async () => {
-        await initAudio();
         try {
+            await ensureAudioContext();
+            // VIKTIGT: Användaren MÅSTE kryssa i "Dela ljud" i popup-rutan!
             const stream = await navigator.mediaDevices.getDisplayMedia({ 
                 video: true, 
                 audio: true 
             });
             
-            setupPitchDetection(stream, 'tab');
-            status.innerText = "Flik kopplad! Starta nu mikrofonen.";
+            if (stream.getAudioTracks().length === 0) {
+                alert("Du glömde att kryssa i 'Dela ljud'!");
+                return;
+            }
+
+            setupPitch(stream, 'tab');
+            statusEl.innerText = "Flik kopplad! Starta nu mikrofonen.";
             document.getElementById('btnMic').disabled = false;
         } catch (err) {
-            status.innerText = "Kunde inte koppla flik: " + err;
+            console.error(err);
+            statusEl.innerText = "Fel vid flikdelning: " + err.message;
         }
     };
 
-    // Knappen för att fånga mikrofonen
+    // Hantera Mikrofon
     document.getElementById('btnMic').onclick = async () => {
         try {
+            await ensureAudioContext();
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            setupPitchDetection(stream, 'mic');
-            status.innerText = "Analyserar båda källorna...";
-            draw();
+            setupPitch(stream, 'mic');
+            statusEl.innerText = "Sjung nu!";
+            if (!isRunning) {
+                isRunning = true;
+                draw();
+            }
         } catch (err) {
-            status.innerText = "Ingen mikrofon hittades.";
+            statusEl.innerText = "Kunde inte nå mikrofonen.";
         }
     };
 
-    function setupPitchDetection(stream, type) {
+    async function setupPitch(stream, type) {
         const source = audioCtx.createMediaStreamSource(stream);
-        const scriptProcessor = audioCtx.createScriptProcessor(2048, 1, 1);
         
-        // Aubio Pitchinställningar
-        aubio().then(({ Pitch }) => {
-            const detector = new Pitch('default', 2048, 2048 / 4, audioCtx.sampleRate);
+        // Vänta på att aubio laddats
+        const AubioModule = await window.aubio();
+        const pitchDetector = new AubioModule.Pitch(
+            'default', 
+            2048, 
+            2048 / 4, 
+            audioCtx.sampleRate
+        );
+
+        const scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
+        source.connect(scriptNode);
+        scriptNode.connect(audioCtx.destination);
+
+        scriptNode.onaudioprocess = (e) => {
+            const input = e.inputBuffer.getChannelData(0);
+            const freq = pitchDetector.do(input);
             
-            source.connect(scriptProcessor);
-            scriptProcessor.connect(audioCtx.destination);
-            
-            scriptProcessor.onaudioprocess = (e) => {
-                const input = e.inputBuffer.getChannelData(0);
-                const pitch = detector.do(input);
-                if (type === 'tab') tabFreq = pitch;
-                if (type === 'mic') micFreq = pitch;
-            };
-        });
+            if (type === 'tab') {
+                tabFreq = freq;
+                document.getElementById('tabHz').innerText = Math.round(freq);
+            } else {
+                micFreq = freq;
+                document.getElementById('micHz').innerText = Math.round(freq);
+            }
+        };
     }
 
     function draw() {
         requestAnimationFrame(draw);
         
-        // Rensa bakgrund
-        ctx.fillStyle = "#000";
+        // Rensa skärmen
+        ctx.fillStyle = "#121212";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        // Uppdatera textdisplay
-        freqDisplay.innerHTML = `
-            <span style="color: #4db8ff;">Flik: ${Math.round(tabFreq)} Hz</span> | 
-            <span style="color: #FF5532;">Du: ${Math.round(micFreq)} Hz</span>
-        `;
-
-        // Rita linje för fliken (Blå)
-        if (tabFreq > 0) {
-            let yTab = canvas.height - (tabFreq % 500 / 500) * canvas.height;
-            ctx.strokeStyle = "#4db8ff";
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.moveTo(0, yTab);
-            ctx.lineTo(canvas.width, yTab);
-            ctx.stroke();
+        // Rita stödlinjer för frekvens
+        ctx.strokeStyle = "#333";
+        ctx.lineWidth = 1;
+        for(let i=0; i<10; i++) {
+            let y = (canvas.height / 10) * i;
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
         }
 
-        // Rita boll för mikrofonen (Orange)
-        if (micFreq > 0) {
-            let yMic = canvas.height - (micFreq % 500 / 500) * canvas.height;
-            ctx.fillStyle = "#FF5532";
+        // Skala om frekvens till Y-position (fokus på 80Hz - 800Hz)
+        const getPlayerY = (f) => {
+            if (f <= 0) return -100;
+            const logF = Math.log2(f);
+            const minF = Math.log2(80);
+            const maxF = Math.log2(800);
+            return canvas.height - ((logF - minF) / (maxF - minF)) * canvas.height;
+        };
+
+        const tabY = getPlayerY(tabFreq);
+        const micY = getPlayerY(micFreq);
+
+        // Rita målet (Fliken) - Blått ljus
+        if (tabY > 0) {
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = "#3d5afe";
+            ctx.strokeStyle = "#3d5afe";
+            ctx.lineWidth = 6;
             ctx.beginPath();
-            ctx.arc(canvas.width / 2, yMic, 15, 0, Math.PI * 2);
+            ctx.moveTo(0, tabY);
+            ctx.lineTo(canvas.width, tabY);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        // Rita spelaren (Du) - Grön boll
+        if (micY > 0) {
+            ctx.fillStyle = "#00c853";
+            ctx.beginPath();
+            ctx.arc(canvas.width / 2, micY, 20, 0, Math.PI * 2);
             ctx.fill();
-            
-            // Kolla om vi är nära
-            if (Math.abs(tabFreq - micFreq) < 5) {
-                ctx.strokeStyle = "#FFFFFF";
-                ctx.lineWidth = 2;
+
+            // Kolla match (inom ett litet spann)
+            const diff = Math.abs(tabFreq - micFreq);
+            if (tabFreq > 0 && diff < 10) {
+                matchText.innerText = "PERFEKT MATCH!";
+                ctx.strokeStyle = "white";
+                ctx.lineWidth = 4;
                 ctx.stroke();
-                status.innerText = "PERFEKT MATCH!";
             } else {
-                status.innerText = "Försök matcha den blå linjen!";
+                matchText.innerText = "";
             }
         }
     }
